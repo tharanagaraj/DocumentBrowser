@@ -23,7 +23,7 @@ extension EmojiArt.EmojiInfo{
 
 
 
-class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScrollViewDelegate , UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout, UICollectionViewDragDelegate, UICollectionViewDropDelegate {
+class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScrollViewDelegate , UICollectionViewDataSource, UICollectionViewDelegate, UICollectionViewDelegateFlowLayout, UICollectionViewDragDelegate, UICollectionViewDropDelegate, EmojiArtViewDelegate {
 
     //MARK: Model
     var emojiArt : EmojiArt?{
@@ -54,7 +54,18 @@ class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScr
     
     
     
-    var emojiArtView = EmojiArtView()
+    lazy var emojiArtView : EmojiArtView = {
+        let eav = EmojiArtView()
+        eav.delegate = self
+        return eav
+    }()
+    
+    //EmojiArtView delegate
+    
+    func emojiArtViewDidChange(_ sender: EmojiArtView){
+        documentChanged()
+    }
+    
     @IBOutlet weak var scrollViewWidth: NSLayoutConstraint!
     @IBOutlet weak var scrollViewHeight: NSLayoutConstraint!
     
@@ -199,6 +210,15 @@ class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScr
     
     var document : EmojiArtDocument?
     
+    func documentChanged(){
+        document?.emojiArt = emojiArt
+        if document?.emojiArt != nil {
+            document?.updateChangeCount(.done)
+        }
+        print("saved")
+    }
+    
+    
     @IBAction func save(_ sender: UIBarButtonItem? = nil) {
         //autosave
         document?.emojiArt = emojiArt
@@ -213,14 +233,29 @@ class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScr
         document?.thumbnail = emojiArtView.snapshot
         }
         dismiss(animated: true){
-            self.document?.close()
+            self.document?.close { success in
+                if let observer = self.documentObserver{
+                    NotificationCenter.default.removeObserver(observer)
+                }
+            }
         }
         
     }
     
     
+    private var documentObserver: NSObjectProtocol?
+    
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        documentObserver = NotificationCenter.default.addObserver(
+            forName: UIDocument.stateChangedNotification,
+            //we only want to listen to broadcasts from our document
+            object: document,
+            queue: OperationQueue.main,
+            using: {notification in
+                print("document changed to \(self.document!.documentState)")
+        })
+        
         document?.open(completionHandler: { success in
             if success {
                 self.title = self.document?.localizedName
@@ -248,6 +283,29 @@ class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScr
     
     
     var imageFetcher : ImageFetcher!
+    private var suppressBadURLWarnings = false
+    
+    private func presentBadURLWarning(for url :URL?){
+        if(!suppressBadURLWarnings){
+        let alert = UIAlertController(
+            title: "Image Transfer Failed",
+            message: "Couldn't transfer the dropped image from it's source.\nShow this warning in the future?",
+            preferredStyle: .alert)
+        
+        alert.addAction(UIAlertAction(
+            title: "Keep warning", style: .default ))
+        
+        alert.addAction(UIAlertAction(
+            title: "Stop Warning",
+            style: .destructive,
+            handler: { action in
+                self.suppressBadURLWarnings = true
+                
+        }))
+        
+        present(alert, animated: true)
+        }
+    }
     
     func dropInteraction(_ interaction: UIDropInteraction, performDrop session: UIDropSession) {
         imageFetcher = ImageFetcher(){(url, image) in
@@ -258,8 +316,16 @@ class EmojiArtViewController: UIViewController, UIDropInteractionDelegate, UIScr
         
         //nsurl is of type ItemProvider, so cast to URL
        session.loadObjects(ofClass: NSURL.self) {nsurls in
-        if let url = nsurls.first as? URL{
-            self.imageFetcher.fetch(url)
+        if let url = nsurls.first as? URL{ 
+//            self.imageFetcher.fetch(url)
+            DispatchQueue.global(qos: .userInitiated).async {
+                if let imageData = try? Data(contentsOf: url.imageURL), let image = UIImage(data: imageData){
+                    DispatchQueue.main.async {
+                        self.emojiArtBackgroundImage = (url, image)
+                        self.save()
+                    }
+                }
+            }
         }
        }
         //uiimage is of type ItemProvider, so cast to URL
